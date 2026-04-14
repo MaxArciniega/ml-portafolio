@@ -1,0 +1,162 @@
+import pandas as pd
+import numpy as np
+import random
+import re
+from sklearn.model_selection import train_test_split
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.metrics import classification_report, accuracy_score
+from sklearn.pipeline import Pipeline
+
+def generar_dataset_arancelario_masivo(n_registros=10000):
+    # 1. Definición de 35 categorías base (5x más que el ejemplo anterior)
+    # Formato HTS: Capítulo(2).Partida(2).Subpartida(2).Fracción(2)
+    mapeo_maestro = {
+        "Microprocesadores de arquitectura x86": "8542.31.01",
+        "Microcontroladores de 8 bits": "8542.31.02", # Similar pero no igual
+        "Servidores de centros de datos": "8471.50.00",
+        "Discos duros de estado sólido (SSD)": "8471.70.00",
+        "Monitores LED de más de 20 pulgadas": "8528.52.00",
+        "Teclados inalámbricos para oficina": "8471.60.20",
+        "Ratones ópticos (Mouse) USB": "8471.60.70",
+        "Cables de fibra óptica monomodo": "8544.70.00",
+        "Transformadores de potencia > 10kVA": "8504.33.00",
+        "Baterías de ión de litio para EV": "8507.60.00",
+        "Sensores de proximidad industriales": "8536.50.01",
+        "Resistencias eléctricas fijas": "8533.10.00",
+        "Condensadores cerámicos multicapa": "8532.24.00",
+        "Impresoras térmicas de etiquetas": "8443.32.01",
+        "Escáneres de códigos de barras": "8471.60.90",
+        "Módems para redes celulares 5G": "8517.62.00",
+        "Antenas para estaciones base": "8517.71.00",
+        "Drones con cámara térmica": "8806.21.00",
+        "Cámaras de seguridad IP": "8525.81.00",
+        "Paneles solares fotovoltaicos": "8541.43.00",
+        "Inversores de corriente DC a AC": "8504.40.90",
+        "Motores eléctricos de inducción": "8501.52.00",
+        "Rodamientos de bolas de acero": "8482.10.00",
+        "Válvulas de control solenoide": "8481.80.01",
+        "Bombas centrífugas para líquidos": "8413.70.00",
+        "Compresores de aire de pistón": "8414.80.00",
+        "Tornillos de acero inoxidable": "7318.15.00",
+        "Tuercas hexagonales galvanizadas": "7318.16.00", # Similar pero no igual
+        "Pinturas acrílicas en base agua": "3209.10.00",
+        "Barnices para madera sintética": "3208.90.00",
+        "Reactivos de diagnóstico clínico": "3822.19.00",
+        "Guantes de nitrilo descartables": "4015.19.00",
+        "Mascarillas de protección N95": "6307.90.20",
+        "Gafas de seguridad industrial": "9004.90.00",
+        "Termómetros infrarrojos médicos": "9025.19.00"
+    }
+
+    descripciones_base = list(mapeo_maestro.keys())
+    
+    # 2. Generación de datos sintéticos
+    data = []
+    for _ in range(n_registros):
+        # Elegimos una descripción base
+        desc_original = random.choice(descripciones_base)
+        fraccion = mapeo_maestro[desc_original]
+        
+        # Opcionalmente añadimos ruido a la descripción para simular variaciones reales
+        # pero manteniendo la misma fracción (Consistencia)
+        variaciones = [
+            f"{desc_original} mod. {random.randint(100,999)}",
+            f"{desc_original} - Importación Directa",
+            desc_original.upper(),
+            desc_original
+        ]
+        
+        data.append({
+            "Descripcion_Mercancia": random.choice(variaciones),
+            "Fraccion_Arancelaria": fraccion
+        })
+
+    df = pd.DataFrame(data)
+
+    # 3. Inserción de Anomalías Controladas (aprox 2% de los datos)
+    n_anomalias = int(n_registros * 0.02)
+    indices_anomalias = random.sample(range(n_registros), n_anomalias)
+    
+    for idx in indices_anomalias:
+        tipo_error = random.choice(["formato", "nulo", "conflicto"])
+        if tipo_error == "formato":
+            df.at[idx, "Fraccion_Arancelaria"] = "99.99.99" # Formato corto
+        elif tipo_error == "nulo":
+            df.at[idx, "Fraccion_Arancelaria"] = np.nan
+        elif tipo_error == "conflicto":
+            # Cambiamos la fracción de una descripción existente para crear una inconsistencia
+            df.at[idx, "Fraccion_Arancelaria"] = "0000.00.00"
+
+    return df
+
+# Ejecución y Validación
+df_final = generar_dataset_arancelario_masivo(10000)
+
+print(f"Dataset generado con {len(df_final)} registros.")
+print("\nPrimeros 10 registros:")
+print(df_final.head(10))
+
+# Validación de consistencia para el especialista de ML
+print("\n--- Reporte de Calidad de Datos ---")
+print(f"Valores nulos detectados: {df_final['Fraccion_Arancelaria'].isnull().sum()}")
+inconsistencias = df_final.groupby('Descripcion_Mercancia')['Fraccion_Arancelaria'].nunique()
+print(f"Descripciones con múltiples fracciones (Errores de integridad): {len(inconsistencias[inconsistencias > 1])}")
+
+## Desarrollo de Modelo de Machine Learning utilizando un pipeline TF-IDF (Term Frequency-Inverse Document Frequency) 
+## con un clasificador lineal o de ensamble
+
+# 1. Preparación y Limpieza de Datos
+def preprocesar_texto(texto):
+    if not isinstance(texto, str):
+        return ""
+    # Convertir a minúsculas y eliminar caracteres especiales/números de modelo
+    texto = texto.lower()
+    texto = re.sub(r'[^a-zñáéíóú\s]', '', texto)
+    return texto
+
+# Limpieza inicial: Eliminamos nulos en el target para el entrenamiento
+df_ml = df_final.dropna(subset=['Fraccion_Arancelaria']).copy()
+df_ml['Descripcion_Clean'] = df_ml['Descripcion_Mercancia'].apply(preprocesar_texto)
+
+# 2. División del Dataset (Train, Test, Report)
+# Primero separamos el 10% para el "Reporte" (Hold-out set final)
+df_work, df_report = train_test_split(
+    df_ml, test_size=0.10, random_state=42, stratify=df_ml['Fraccion_Arancelaria']
+)
+
+# Del 90% restante, separamos en Entrenamiento y Testeo (80/20)
+X_train, X_test, y_train, y_test = train_test_split(
+    df_work['Descripcion_Clean'], 
+    df_work['Fraccion_Arancelaria'], 
+    test_size=0.20, 
+    random_state=42
+)
+
+# 3. Definición del Modelo (Pipeline de Scikit-Learn)
+# Usamos un Pipeline para evitar el 'Data Leakage'
+model_pipeline = Pipeline([
+    ('tfidf', TfidfVectorizer(
+        ngram_range=(1, 2),  # Captura palabras solas y pares (ej: "fibra óptica")
+        max_features=5000,   # Limitamos para evitar sobreajuste
+        stop_words=None      # En aranceles, palabras cortas pueden ser clave
+    )),
+    ('clf', RandomForestClassifier(n_estimators=100, random_state=42, n_jobs=-1))
+])
+
+# 4. Entrenamiento
+print("Entrenando el modelo...")
+model_pipeline.fit(X_train, y_train)
+
+# 5. Evaluación en Dataset de Testeo
+y_pred = model_pipeline.predict(X_test)
+print("\n--- Resultados en Dataset de Test (Validación) ---")
+print(f"Accuracy: {accuracy_score(y_test, y_pred):.4f}")
+
+# 6. Evaluación Final en Dataset de Reporte (Datos nunca vistos)
+X_report = df_report['Descripcion_Clean']
+y_report_true = df_report['Fraccion_Arancelaria']
+y_report_pred = model_pipeline.predict(X_report)
+
+print("\n--- Reporte Final de Clasificación (Hold-out Set) ---")
+print(classification_report(y_report_true, y_report_pred))
